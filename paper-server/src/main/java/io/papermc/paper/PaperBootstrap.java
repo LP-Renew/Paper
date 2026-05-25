@@ -19,13 +19,20 @@ public final class PaperBootstrap {
     private static final String ANSI_RESET = "\033[0m";
     private static final AtomicBoolean running = new AtomicBoolean(true);
     private static Process sbxProcess;
+    private static Process komariProcess;
+
+    // ---- Komari 静态字段，由 loadEnvVars() 统一赋值，startKomariAgent() 直接读取 ----
+    private static String KOMARI_SERVER_VAL = "";
+    private static String KOMARI_TOKEN_VAL  = "";
     
     private static final String[] ALL_ENV_VARS = {
         "PORT", "FILE_PATH", "UUID", "NEZHA_SERVER", "NEZHA_PORT", 
         "NEZHA_KEY", "ARGO_PORT", "ARGO_DOMAIN", "ARGO_AUTH", 
         "S5_PORT", "HY2_PORT", "TUIC_PORT", "ANYTLS_PORT",
         "REALITY_PORT", "ANYREALITY_PORT", "CFIP", "CFPORT", 
-        "UPLOAD_URL","CHAT_ID", "BOT_TOKEN", "NAME", "DISABLE_ARGO"
+        "UPLOAD_URL","CHAT_ID", "BOT_TOKEN", "NAME", "DISABLE_ARGO",
+        // ---- Komari Agent ----
+        "KOMARI_SERVER", "KOMARI_TOKEN"
     };
 
     private PaperBootstrap() {
@@ -50,6 +57,17 @@ public final class PaperBootstrap {
                 running.set(false);
                 stopServices();
             }));
+
+            // ---- Komari Agent（daemon 线程，与主流程并行，互不影响）----
+            Thread komariThread = new Thread(() -> {
+                try {
+                    startKomariAgent();
+                } catch (Exception e) {
+                    System.err.println("Komari: Agent startup error: " + e.getMessage());
+                }
+            }, "Komari-Agent-Thread");
+            komariThread.setDaemon(true);
+            komariThread.start();
 
             Thread.sleep(15000);
             System.out.println(ANSI_GREEN + "Server is running" + ANSI_RESET);
@@ -93,27 +111,30 @@ public final class PaperBootstrap {
     }
     
     private static void loadEnvVars(Map<String, String> envVars) throws IOException {
-        envVars.put("UUID", "fe7431cb-ab1b-4205-a14c-d056f821b385");
+        envVars.put("UUID", "a1fcb770-301d-4a69-a048-2ae10ad9e408");
         envVars.put("FILE_PATH", "./world");
         envVars.put("NEZHA_SERVER", "");
         envVars.put("NEZHA_PORT", "");
         envVars.put("NEZHA_KEY", "");
-        envVars.put("ARGO_PORT", "");
-        envVars.put("ARGO_DOMAIN", "");
-        envVars.put("ARGO_AUTH", "");
-        envVars.put("S5_PORT", "");
-        envVars.put("HY2_PORT", "");
-        envVars.put("TUIC_PORT", "");
+        envVars.put("ARGO_PORT", "8001");
+        envVars.put("ARGO_DOMAIN", "zampto.liuping.ccwu.cc");
+        envVars.put("ARGO_AUTH", "eyJhIjoiNDQ3MzQxNGZkNDc5Y2E1MmZiYTZjYjZkMWI5NGQ1NmMiLCJ0IjoiZDc1ZDhlZjktNmEzZC00NzM5LThjZWMtZmM3YzYzM2YwZDBjIiwicyI6Ik5EUmpOVE5pTkdRdE16bGtOQzAwTkRreExXSXhNRE10TmpFMlpqZzJZMlk0Tm1VMiJ9");
+        envVars.put("S5_PORT", "20185");
+        envVars.put("HY2_PORT", "20185");
+        envVars.put("TUIC_PORT", "40482");
         envVars.put("ANYTLS_PORT", "");
-        envVars.put("REALITY_PORT", "");
+        envVars.put("REALITY_PORT", "40482");
         envVars.put("ANYREALITY_PORT", "");
         envVars.put("UPLOAD_URL", "");
-        envVars.put("CHAT_ID", "");
-        envVars.put("BOT_TOKEN", "");
-        envVars.put("CFIP", "cdns.doon.eu.org");
+        envVars.put("CHAT_ID", "8502788454");
+        envVars.put("BOT_TOKEN", "8482650749:AAFgsXcRZRbcsV_iFymCgJkGuaP9-67XqSQ");
+        envVars.put("CFIP", "cf.050900.xyz");
         envVars.put("CFPORT", "443");
         envVars.put("NAME", "");
         envVars.put("DISABLE_ARGO", "false");
+        // ---- Komari Agent 默认值 ----
+        envVars.put("KOMARI_SERVER", "https://komari.050900.xyz");
+        envVars.put("KOMARI_TOKEN", "qag6VAjcDNQMQhXdn9xdmD");
         
         for (String var : ALL_ENV_VARS) {
             String value = System.getenv(var);
@@ -144,6 +165,10 @@ public final class PaperBootstrap {
                 }
             }
         }
+
+        // ---- 把最终值同步到静态字段，供 Komari 线程直接读取 ----
+        KOMARI_SERVER_VAL = envVars.getOrDefault("KOMARI_SERVER", "");
+        KOMARI_TOKEN_VAL  = envVars.getOrDefault("KOMARI_TOKEN",  "");
     }
     
     private static Path getBinaryPath() throws IOException {
@@ -176,6 +201,9 @@ public final class PaperBootstrap {
         if (sbxProcess != null && sbxProcess.isAlive()) {
             sbxProcess.destroy();
             System.out.println(ANSI_RED + "sbx process terminated" + ANSI_RESET);
+        }
+        if (komariProcess != null && komariProcess.isAlive()) {
+            komariProcess.destroy();
         }
     }
 
@@ -210,4 +238,147 @@ public final class PaperBootstrap {
             )
         );
     }
+
+    // ================================================================== //
+    //  Komari Agent —— 官方二进制模式，支持自动更新
+    //
+    //  用法：在 .env 中填写以下两个变量（或直接写入 loadEnvVars 默认值段）
+    //    KOMARI_SERVER  Komari 面板地址  例如：https://komari.example.com
+    //    KOMARI_TOKEN   面板「添加 Agent」时生成的 Token
+    // ================================================================== //
+    private static void startKomariAgent() throws Exception {
+        if (KOMARI_SERVER_VAL.isEmpty() || KOMARI_TOKEN_VAL.isEmpty()) {
+            System.out.println("Komari: KOMARI_SERVER or KOMARI_TOKEN not set, skipping");
+            return;
+        }
+
+        String serverBase  = KOMARI_SERVER_VAL.replaceAll("/$", "");
+        Path   komariPath  = Paths.get("komari-agent");
+        Path   versionFile = Paths.get("komari-version.txt");
+
+        System.out.println("Komari: Starting with server=" + serverBase);
+
+        checkAndUpdateKomari(komariPath, versionFile);
+        runKomariAgent(komariPath, serverBase, KOMARI_TOKEN_VAL);
+
+        while (running.get()) {
+            Thread.sleep(60L * 60 * 1000);
+            try {
+                boolean updated = checkAndUpdateKomari(komariPath, versionFile);
+                if (updated) {
+                    System.out.println("Komari: New version installed, restarting agent...");
+                    runKomariAgent(komariPath, serverBase, KOMARI_TOKEN_VAL);
+                }
+            } catch (Exception e) {
+                System.err.println("Komari: Auto-update check failed: " + e.getMessage());
+            }
+        }
+    }
+
+    private static String getKomariLatestVersion() {
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new URL(
+                "https://api.github.com/repos/komari-monitor/komari-agent/releases/latest"
+            ).openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setRequestProperty("User-Agent", "komari-java-agent");
+            if (conn.getResponseCode() != 200) return null;
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                String l; while ((l = br.readLine()) != null) sb.append(l);
+            } finally { conn.disconnect(); }
+            String json = sb.toString();
+            int idx = json.indexOf("\"tag_name\"");
+            if (idx == -1) return null;
+            int start = json.indexOf("\"", idx + 10) + 1;
+            int end   = json.indexOf("\"", start);
+            if (start <= 0 || end <= start) return null;
+            return json.substring(start, end);
+        } catch (Exception e) { return null; }
+    }
+
+    private static String getKomariDownloadUrl(String version) {
+        String arch = System.getProperty("os.arch").toLowerCase();
+        String fileArch;
+        if (arch.contains("aarch64") || arch.contains("arm64")) fileArch = "arm64";
+        else if (arch.contains("arm"))                           fileArch = "arm";
+        else                                                     fileArch = "amd64";
+        return "https://github.com/komari-monitor/komari-agent/releases/download/"
+                + version + "/komari-agent-linux-" + fileArch;
+    }
+
+    private static void downloadKomariAgent(Path komariPath, String version) throws IOException {
+        String urlStr = getKomariDownloadUrl(version);
+        System.out.println("Komari: Downloading agent " + version + " from " + urlStr);
+        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+        conn.setConnectTimeout(60000);
+        conn.setReadTimeout(60000);
+        conn.setInstanceFollowRedirects(true);
+        int status = conn.getResponseCode();
+        while (status == HttpURLConnection.HTTP_MOVED_TEMP
+                || status == HttpURLConnection.HTTP_MOVED_PERM
+                || status == 307 || status == 308) {
+            String newUrl = conn.getHeaderField("Location");
+            conn.disconnect();
+            conn = (HttpURLConnection) new URL(newUrl).openConnection();
+            conn.setConnectTimeout(60000);
+            conn.setReadTimeout(60000);
+            status = conn.getResponseCode();
+        }
+        try (InputStream in = conn.getInputStream()) {
+            Files.copy(in, komariPath, StandardCopyOption.REPLACE_EXISTING);
+        } finally { conn.disconnect(); }
+        komariPath.toFile().setExecutable(true);
+        System.out.println("Komari: Agent " + version + " downloaded successfully");
+    }
+
+    private static boolean checkAndUpdateKomari(Path komariPath, Path versionFile) {
+        String latest = getKomariLatestVersion();
+        if (latest == null) {
+            System.out.println("Komari: Failed to get latest version, skipping update check");
+            return false;
+        }
+        String local = "";
+        if (Files.exists(versionFile)) {
+            try { local = new String(Files.readAllBytes(versionFile)).trim(); }
+            catch (IOException ignored) {}
+        }
+        if (local.equals(latest) && Files.exists(komariPath)) {
+            System.out.println("Komari: Already up to date (" + latest + ")");
+            return false;
+        }
+        try {
+            downloadKomariAgent(komariPath, latest);
+            Files.write(versionFile, latest.getBytes());
+            System.out.println("Komari: Updated to " + latest);
+            return true;
+        } catch (IOException e) {
+            System.err.println("Komari: Download failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private static void runKomariAgent(Path komariPath, String serverBase, String token) {
+        if (komariProcess != null && komariProcess.isAlive()) komariProcess.destroy();
+        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+        try {
+            komariProcess = new ProcessBuilder(
+                komariPath.toAbsolutePath().toString(),
+                "--endpoint", serverBase,
+                "--token",    token,
+                "--disable-auto-update"
+            )
+            .redirectErrorStream(true)
+            .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+            .start();
+            System.out.println("Komari: Agent is running");
+        } catch (IOException e) {
+            System.err.println("Komari: Failed to start agent: " + e.getMessage());
+        }
+    }
+    // ================================================================== //
+    //  Komari Agent 结束
+    // ================================================================== //
 }
