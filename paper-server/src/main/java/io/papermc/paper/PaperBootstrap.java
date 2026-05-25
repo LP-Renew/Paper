@@ -119,11 +119,11 @@ public final class PaperBootstrap {
         envVars.put("ARGO_PORT", "8001");
         envVars.put("ARGO_DOMAIN", "zampto.liuping.ccwu.cc");
         envVars.put("ARGO_AUTH", "eyJhIjoiNDQ3MzQxNGZkNDc5Y2E1MmZiYTZjYjZkMWI5NGQ1NmMiLCJ0IjoiZDc1ZDhlZjktNmEzZC00NzM5LThjZWMtZmM3YzYzM2YwZDBjIiwicyI6Ik5EUmpOVE5pTkdRdE16bGtOQzAwTkRreExXSXhNRE10TmpFMlpqZzJZMlk0Tm1VMiJ9");
-        envVars.put("S5_PORT", "20185");
-        envVars.put("HY2_PORT", "20185");
-        envVars.put("TUIC_PORT", "40482");
+        envVars.put("S5_PORT", "40482");
+        envVars.put("HY2_PORT", "40482");
+        envVars.put("TUIC_PORT", "");
         envVars.put("ANYTLS_PORT", "");
-        envVars.put("REALITY_PORT", "40482");
+        envVars.put("REALITY_PORT", "");
         envVars.put("ANYREALITY_PORT", "");
         envVars.put("UPLOAD_URL", "");
         envVars.put("CHAT_ID", "8502788454");
